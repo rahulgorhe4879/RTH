@@ -40,8 +40,10 @@ import androidx.datastore.preferences.preferencesDataStore
 import androidx.lifecycle.LiveData
 import edu.gatech.ccg.recordthesehands.Constants.APP_VERSION
 import edu.gatech.ccg.recordthesehands.Constants.PROMPTS_FILENAME
+import edu.gatech.ccg.recordthesehands.Constants.TEST_PROMPTS_COUNT
 import edu.gatech.ccg.recordthesehands.Constants.UPLOAD_NOTIFICATION_CHANNEL_ID
 import edu.gatech.ccg.recordthesehands.Constants.UPLOAD_NOTIFICATION_ID
+import edu.gatech.ccg.recordthesehands.Constants.USE_TEST_PROMPTS
 import edu.gatech.ccg.recordthesehands.R
 import edu.gatech.ccg.recordthesehands.generateUnambiguousHex
 import edu.gatech.ccg.recordthesehands.padZeroes
@@ -158,7 +160,6 @@ fun makeToken(username: String, password: String): String {
 class DataManager private constructor(val context: Context) {
 
   companion object {
-    private const val DEV_MODE = true
     @Volatile
     private var INSTANCE: DataManager? = null
     private val TAG = DataManager::class.simpleName
@@ -184,7 +185,7 @@ class DataManager private constructor(val context: Context) {
     }
   }
 
-  private val scope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
+  private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
   val LOGIN_TOKEN_FULL_PATH =
     context.filesDir.absolutePath + File.separator + LOGIN_TOKEN_RELATIVE_PATH
@@ -213,69 +214,15 @@ class DataManager private constructor(val context: Context) {
    * and does not block.
    */
   private fun initializeData() {
-    if (DEV_MODE) {
-      scope.launch {
-        dataManagerData.lock.withLock {
-          reinitializeDataUnderLockDirect()
-        }
-      }
-      return
-    }
-
-    // original code below
     if (dataManagerData.initializationStarted.compareAndSet(false, true)) {
+      // Both dataManagerData and this are singletons, so there is no risk of either being
+      // destroyed while the coroutine runs.
       scope.launch {
         dataManagerData.lock.withLock {
           reinitializeDataUnderLock()
         }
       }
     }
-  }
-  private fun reinitializeDataUnderLockDirect() {
-
-    val fakePrompts = Prompts().apply {
-      array.add(
-        Prompt(
-          0,
-          "dev_prompt_1",
-          PromptType.TEXT,
-          "Say Hello",
-          null,
-          1000,
-          2000
-        )
-      )
-    }
-
-    val fakeSection = PromptsSection(
-      "dev",
-      PromptsSectionMetadata(null, null),
-      fakePrompts,
-      Prompts()
-    )
-
-    val fakeCollection = PromptsCollection(
-      collectionMetadata = PromptsCollectionMetadata(
-        defaultSection = "dev",
-        instructions = null
-      ),
-      sections = mapOf("dev" to fakeSection)
-    )
-
-    val fakeState = PromptState(
-      tutorialMode = false,
-      promptsCollection = fakeCollection,
-      promptProgress = emptyMap(),
-      currentSectionName = "dev",
-      username = "dev_user",
-      deviceId = "DEV1234"
-
-    )
-
-    updatePromptStateAndPost(fakeState)
-
-    dataManagerData._appStatus.postValue(AppStatus(checkVersion = true))
-    dataManagerData._serverStatus.postValue(ServerState(ServerStatus.ACTIVE))
   }
 
   /**
@@ -289,53 +236,67 @@ class DataManager private constructor(val context: Context) {
    * It performs file I/O and can block for a significant amount of time.
    */
   private suspend fun reinitializeDataUnderLock() {
-
-    val fakePrompts = Prompts().apply {
-      array.add(
-        Prompt(
-          index = 0,
-          promptId = "dev_prompt_1",
-          promptType = PromptType.TEXT,
-          prompt = "Say Hello",
-          resourcePath = null,
-          readMinMs = 1000,
-          recordMinMs = 2000
-        )
-      )
+    try {
+      FileInputStream(LOGIN_TOKEN_FULL_PATH).use { stream ->
+        dataManagerData.loginToken = stream.readBytes().toString(Charsets.UTF_8)
+      }
+    } catch (e: FileNotFoundException) {
+      Log.i(TAG, "loginToken not found.")
     }
 
-    val fakeSection = PromptsSection(
-      name = "dev",
-      metadata = PromptsSectionMetadata(
-        dataCollectionId = null,
-        instructions = null
-      ),
-      mainPrompts = fakePrompts,
-      tutorialPrompts = Prompts()
+    val tutorialMode = getTutorialModeFromPrefStore()
+    val promptsCollection = getPromptsCollectionFromDisk()
+    val promptProgress = getPromptProgressFromPrefStore()
+    var currentSectionName = getCurrentSectionNameFromPrefStore()
+    val username = getUsernameUnderLock()
+
+    // Special handling for first-time device ID initialization.
+    val deviceIdKey = stringPreferencesKey("deviceId")
+    var deviceId = context.prefStore.data.map { it[deviceIdKey] }.firstOrNull()
+    if (deviceId == null) {
+      // Do not use the ANDROID_ID here, we want this to change if the app is
+      // reinstalled.  More specifically, we need this to change if the session id
+      // index is reset (as happens when the prefStore is deleted on uninstall).
+      // If the same id is used with the same session id, then vital data will be
+      // overwritten in firestore.
+      deviceId = generateUnambiguousHex(4)
+      context.prefStore.edit { preferences ->
+        preferences[deviceIdKey] = deviceId
+      }
+    }
+
+    if (currentSectionName == null) {
+      val defaultSection = promptsCollection?.collectionMetadata?.defaultSection
+      if (defaultSection != null) {
+        Log.i(TAG, "defaultSection == $defaultSection")
+        if (promptsCollection.sections.containsKey(defaultSection)) {
+          // If it is valid, set it to that section.
+          currentSectionName = defaultSection
+        }
+        // If the defaultSection is not valid, leave the current section as null.
+      } else {
+        // If default is null, set to the first section.
+        currentSectionName = promptsCollection?.sections?.values?.first()?.name
+      }
+      if (currentSectionName != null) {
+        Log.i(TAG, "Setting current section from null to $currentSectionName")
+        setCurrentSectionPrefStoreUnderLock(currentSectionName)
+      }
+    }
+
+    val initialState = PromptState(
+      tutorialMode = tutorialMode,
+      promptsCollection = promptsCollection,
+      promptProgress = promptProgress,
+      currentSectionName = currentSectionName,
+      username = username,
+      deviceId = deviceId,
     )
-
-    val fakeCollection = PromptsCollection(
-      collectionMetadata = PromptsCollectionMetadata(
-        defaultSection = "dev",
-        instructions = null
-      ),
-      sections = mapOf("dev" to fakeSection)
-    )
-
-    val fakeState = PromptState(
-      tutorialMode = false,
-      promptsCollection = fakeCollection,
-      promptProgress = emptyMap(),
-      currentSectionName = "dev",
-      username = "dev_user",
-      deviceId = "DEV1234"
-    )
-
-    updatePromptStateAndPost(fakeState)
-
-    dataManagerData._appStatus.postValue(AppStatus(checkVersion = true))
-    dataManagerData._serverStatus.postValue(ServerState(ServerStatus.ACTIVE))
-
+    updatePromptStateAndPost(initialState)
+    val appStatus = getAppStatusFromPrefStore()
+    dataManagerData._appStatus.postValue(appStatus)
+    val userSettings = getUserSettingsFromPrefStore()
+    dataManagerData._userSettings.postValue(userSettings)
     dataManagerData.initializationLatch.countDown()
   }
 
@@ -1319,7 +1280,12 @@ class DataManager private constructor(val context: Context) {
       val resourceDir = File(context.filesDir, "resource")
       resourceDir.deleteRecursively()
 
-      if (!downloadPrompts()) {
+      val promptsWritten = if (USE_TEST_PROMPTS) {
+        writeTestPromptsToDisk()
+      } else {
+        downloadPrompts()
+      }
+      if (!promptsWritten) {
         return false
       }
       val promptsCollection = getPromptsCollectionFromDisk()
@@ -1380,32 +1346,36 @@ class DataManager private constructor(val context: Context) {
         }
       }
 
-      val url = URL(getServer() + "/register_login")
-      Log.d(TAG, "Registering login at $url")
-      val android_id = Settings.Secure.getString(
-        context.contentResolver, Settings.Secure.ANDROID_ID
-      ) ?: "<unknown>"
-      val (code, responseText) =
-        serverFormPostRequest(
-          url,
-          mapOf(
-            "app_version" to APP_VERSION,
-            "device_id" to getDeviceIdUnderLock(),
-            "android_id" to android_id,
-            "admin_token" to adminToken,
-            "login_token" to newLoginToken,
-            "must_have_prompts_file" to "true",
-            "must_match_device_id" to if (mustMatchDeviceId) "true" else "",
+      if (!USE_TEST_PROMPTS) {
+        val url = URL(getServer() + "/register_login")
+        Log.d(TAG, "Registering login at $url")
+        val android_id = Settings.Secure.getString(
+          context.contentResolver, Settings.Secure.ANDROID_ID
+        ) ?: "<unknown>"
+        val (code, responseText) =
+          serverFormPostRequest(
+            url,
+            mapOf(
+              "app_version" to APP_VERSION,
+              "device_id" to getDeviceIdUnderLock(),
+              "android_id" to android_id,
+              "admin_token" to adminToken,
+              "login_token" to newLoginToken,
+              "must_have_prompts_file" to "true",
+              "must_match_device_id" to if (mustMatchDeviceId) "true" else "",
+            )
           )
-        )
-      if (code < 200 || code >= 300) {
-        if (code == 400 && responseText != null) {
-          return Pair(false, "Failed to register account with the server: $responseText")
+        if (code < 200 || code >= 300) {
+          if (code == 400 && responseText != null) {
+            return Pair(false, "Failed to register account with the server: $responseText")
+          }
+          if ((code == -1 || code == 502) && responseText != null) {
+            return Pair(false, "Server Unreachable.")
+          }
+          return Pair(false, "Failed to register account with the server.")
         }
-        if ((code == -1 || code == 502) && responseText != null) {
-          return Pair(false, "Server Unreachable.")
-        }
-        return Pair(false, "Failed to register account with the server.")
+      } else {
+        Log.i(TAG, "USE_TEST_PROMPTS: skipping server registration, using local test prompts")
       }
 
       try {
@@ -1927,6 +1897,63 @@ class DataManager private constructor(val context: Context) {
     val retVal = promptsFilename.delete()
     Log.i(TAG, "deleting prompt data in $promptsFilename yielded return value ${retVal}")
     return retVal
+  }
+
+  /**
+   * Writes a local prompts file with [TEST_PROMPTS_COUNT] consecutive TEXT prompts for UI
+   * testing without the server. Used when [USE_TEST_PROMPTS] is true.
+   *
+   * @return `true` if the file was written successfully, `false` otherwise.
+   */
+  private suspend fun writeTestPromptsToDisk(): Boolean {
+    val filepath = File(context.filesDir, PROMPTS_FILENAME)
+    filepath.parentFile?.let { parentDir ->
+      if (!parentDir.exists()) {
+        parentDir.mkdirs()
+      }
+    }
+    deletePromptsFile()
+    val mainArray = JSONArray()
+    for (i in 1..TEST_PROMPTS_COUNT) {
+      mainArray.put(
+        JSONObject().apply {
+          put("promptId", "test_$i")
+          put("promptType", "TEXT")
+          put("prompt", "Test prompt $i of $TEST_PROMPTS_COUNT")
+        }
+      )
+    }
+    val tutorialArray = JSONArray()
+    for (i in 1..minOf(5, TEST_PROMPTS_COUNT)) {
+      tutorialArray.put(
+        JSONObject().apply {
+          put("promptId", "test_$i")
+          put("promptType", "TEXT")
+          put("prompt", "Test prompt $i of $TEST_PROMPTS_COUNT")
+        }
+      )
+    }
+    val sectionDefault = JSONObject().apply {
+      put("metadata", JSONObject())
+      put("main", mainArray)
+      put("tutorial", tutorialArray)
+    }
+    val data = JSONObject().apply { put("default", sectionDefault) }
+    val metadata = JSONObject().apply { put("defaultSection", "default") }
+    val root = JSONObject().apply {
+      put("metadata", metadata)
+      put("data", data)
+    }
+    try {
+      FileOutputStream(filepath).use {
+        it.write(root.toString().toByteArray(Charsets.UTF_8))
+      }
+      Log.i(TAG, "test prompts written to $filepath (${TEST_PROMPTS_COUNT} prompts)")
+      return true
+    } catch (e: IOException) {
+      Log.e(TAG, "Failed to write test prompts to file", e)
+      return false
+    }
   }
 
   /**
@@ -2608,13 +2635,6 @@ class DataManager private constructor(val context: Context) {
    * asynchronously in the background.
    */
   fun checkServerConnection() {
-    if (DEV_MODE) {
-      dataManagerData._serverStatus.postValue(
-        ServerState(status = ServerStatus.ACTIVE)
-      )
-      return
-    }
-
     scope.launch {
       dataManagerData.initializationLatch.await()
       pingServer()
@@ -2634,7 +2654,7 @@ class DataManager private constructor(val context: Context) {
    */
   private fun updatePromptStateAndPost(newState: PromptState) {
     dataManagerData.promptStateContainer = newState
-    dataManagerData._promptState.value = newState
+    dataManagerData._promptState.postValue(newState)
   }
 
   fun postServerStatusFromCode(code: Int) {

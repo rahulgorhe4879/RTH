@@ -92,6 +92,18 @@ object Constants {
    */
   const val PROMPTS_FILENAME = "prompts.json"
 
+  /**
+   * When true, the app uses 10 local test prompts instead of downloading from the server.
+   * Use this for UI testing without the GSC/backend server.
+   * Set to false for production.
+   */
+  const val USE_TEST_PROMPTS = true
+
+  /**
+   * Number of consecutive test prompts when [USE_TEST_PROMPTS] is true.
+   */
+  const val TEST_PROMPTS_COUNT = 10
+
   private val COUNTDOWN_DURATION_BASE = 10 * 60 * 1000L
   private val RECORDING_HARD_STOP_DURATION_BASE = COUNTDOWN_DURATION_BASE + 3 * 60 * 1000L
 
