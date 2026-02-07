@@ -1,0 +1,191 @@
+/**
+ * This file is part of Record These Hands, licensed under the MIT license.
+ *
+ * Copyright (c) 2023-2024
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+package edu.gatech.ccg.recordthesehands
+
+import android.content.Context
+import android.util.Log
+import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
+import android.view.View
+import java.security.SecureRandom
+import java.time.Instant
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
+import java.util.Calendar
+import java.util.Properties
+import javax.mail.Authenticator
+import javax.mail.Message
+import javax.mail.MessagingException
+import javax.mail.PasswordAuthentication
+import javax.mail.Session
+import javax.mail.Transport
+import javax.mail.internet.InternetAddress
+import javax.mail.internet.MimeBodyPart
+import javax.mail.internet.MimeMessage
+import javax.mail.internet.MimeMultipart
+
+/**
+ * Prefixes a number with zeros so that the total length of the output string is at least
+ * `digits` characters long.
+ */
+fun padZeroes(number: Int, digits: Int = 5): String {
+  return "%0${digits}d".format(number)
+}
+
+fun Instant.toConsistentString(): String {
+  return DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'")
+    .withZone(ZoneOffset.UTC)
+    .format(this)
+}
+
+/**
+ * Sends an email from the given address to the list of recipients,
+ * with a given subject and message content. Currently only compatible with
+ * Gmail addresses.
+ *
+ * Based on code by Stack Overflow user Blundell (CC BY-SA 4.0)
+ * https://stackoverflow.com/a/60090464
+ */
+fun sendEmail(from: String, to: List<String>, subject: String, content: String, password: String) {
+  val props = Properties()
+
+  val server = "smtp.gmail.com"
+  val auth = PasswordAuthentication(from, password)
+
+  props["mail.smtp.auth"] = "true"
+  props["mail.user"] = from
+  props["mail.smtp.host"] = server
+  props["mail.smtp.port"] = "587"
+  props["mail.smtp.starttls.enable"] = "true"
+  props["mail.smtp.ssl.trust"] = server
+  props["mail.mime.charset"] = "UTF-8"
+
+  props["mail.smtp.connectiontimeout"] = "10000"
+  props["mail.smtp.timeout"] = "10000"
+
+  val msg: Message = MimeMessage(Session.getDefaultInstance(props, object : Authenticator() {
+    override fun getPasswordAuthentication() = auth
+  }))
+
+  msg.setFrom(InternetAddress(from))
+  msg.sentDate = Calendar.getInstance().time
+
+  val recipients = to.map { InternetAddress(it) }
+  msg.setRecipients(Message.RecipientType.TO, recipients.toTypedArray())
+
+  msg.replyTo = arrayOf(InternetAddress(from))
+
+  msg.addHeader("X-Mailer", "RecordTheseHands")
+  msg.addHeader("Precedence", "bulk")
+  msg.subject = subject
+
+  msg.setContent(MimeMultipart().apply {
+    addBodyPart(MimeBodyPart().apply {
+      setText(content, "iso-8859-1")
+    })
+  })
+
+  Log.d(
+    "EMAIL", "Attempting to send email with subject '$subject'"
+  )
+
+  try {
+    Transport.send(msg)
+  } catch (ex: MessagingException) {
+    Log.d("EMAIL", "Email send failed: ${ex.message}")
+  }
+}
+
+fun clipText(text: String, len: Int = 20): String {
+  return if (text.length > len) {
+    text.substring(0, len - 3) + "..."
+  } else {
+    text
+  }
+}
+
+fun msToHMS(ms: Long, compact: Boolean = false): String {
+  var seconds = ms / 1000L
+  var minutes = seconds / 60L
+  val hours = minutes / 60L
+  seconds = seconds % 60L
+  minutes = minutes % 60L
+  val msRemaining = ms % 1000L
+
+  if (compact) {
+    return "%02d:%02d:%02d.%03d".format(hours, minutes, seconds, msRemaining)
+  } else {
+    var output = ""
+    if (hours > 0) {
+      output += "$hours hours, "
+    }
+    if (minutes > 0 || hours > 0) {
+      output += "$minutes minutes, "
+    }
+    if (minutes > 0 || hours > 0 || seconds > 0 || msRemaining > 0) {
+      output += "%d.%03d seconds".format(seconds, msRemaining)
+    } else {
+      output += "0 seconds"
+    }
+    return output
+  }
+}
+
+fun hapticFeedbackOnTouchListener(view: View, event: MotionEvent): Boolean {
+  when (event.action) {
+    MotionEvent.ACTION_DOWN -> {
+      view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+    }
+
+    MotionEvent.ACTION_UP -> {
+      view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY_RELEASE)
+    }
+  }
+  return false // Allow other listeners to receive events.
+}
+
+fun thisDeviceIsATablet(context: Context): Boolean {
+  val configuration = context.resources.configuration
+  return configuration.smallestScreenWidthDp >= 600
+}
+
+fun generateUnambiguousHex(numBytes: Int): String {
+  var candidate = SecureRandom().generateSeed(numBytes).toHexString()
+  Log.d("generateDeviceId", "Generated deviceId first try: ${candidate}")
+  if (numBytes <= 0) {
+    return ""
+  }
+  if (numBytes > 1) {
+    while (!Regex("^[a-f][0-9a-f]*[0-9][0-9a-f]*[a-f]$").matches(candidate)) {
+      candidate = SecureRandom().generateSeed(numBytes).toHexString()
+      Log.d("generateDeviceId", "Generated deviceId: ${candidate}")
+    }
+  } else {
+    while (!Regex("^[a-f][0-9]$").matches(candidate)) {
+      candidate = SecureRandom().generateSeed(numBytes).toHexString()
+      Log.d("generateDeviceId", "Generated deviceId: ${candidate}")
+    }
+  }
+  return candidate
+}
