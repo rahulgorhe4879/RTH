@@ -92,7 +92,7 @@ object Constants {
    */
   const val PROMPTS_FILENAME = "prompts.json"
 
-  private val COUNTDOWN_DURATION_BASE = 15 * 60 * 1000L
+  private val COUNTDOWN_DURATION_BASE = 10 * 60 * 1000L
   private val RECORDING_HARD_STOP_DURATION_BASE = COUNTDOWN_DURATION_BASE + 3 * 60 * 1000L
 
   private val UPLOAD_RESUME_ON_STARTUP_TIMEOUT_BASE = 30L * 1000L

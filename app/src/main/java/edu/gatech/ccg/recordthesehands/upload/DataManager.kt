@@ -184,7 +184,7 @@ class DataManager private constructor(val context: Context) {
     }
   }
 
-  private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+  private val scope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
 
   val LOGIN_TOKEN_FULL_PATH =
     context.filesDir.absolutePath + File.separator + LOGIN_TOKEN_RELATIVE_PATH
@@ -214,17 +214,11 @@ class DataManager private constructor(val context: Context) {
    */
   private fun initializeData() {
     if (DEV_MODE) {
-      val fakeState = PromptState(
-        tutorialMode = true,
-        promptsCollection = null,
-        promptProgress = emptyMap(),
-        currentSectionName = null,
-        username = "dev_user",
-        deviceId = "DEV1234"
-      )
-
-      updatePromptStateAndPost(fakeState)
-      dataManagerData.initializationLatch.countDown()
+      scope.launch {
+        dataManagerData.lock.withLock {
+          reinitializeDataUnderLockDirect()
+        }
+      }
       return
     }
 
@@ -236,6 +230,52 @@ class DataManager private constructor(val context: Context) {
         }
       }
     }
+  }
+  private fun reinitializeDataUnderLockDirect() {
+
+    val fakePrompts = Prompts().apply {
+      array.add(
+        Prompt(
+          0,
+          "dev_prompt_1",
+          PromptType.TEXT,
+          "Say Hello",
+          null,
+          1000,
+          2000
+        )
+      )
+    }
+
+    val fakeSection = PromptsSection(
+      "dev",
+      PromptsSectionMetadata(null, null),
+      fakePrompts,
+      Prompts()
+    )
+
+    val fakeCollection = PromptsCollection(
+      collectionMetadata = PromptsCollectionMetadata(
+        defaultSection = "dev",
+        instructions = null
+      ),
+      sections = mapOf("dev" to fakeSection)
+    )
+
+    val fakeState = PromptState(
+      tutorialMode = false,
+      promptsCollection = fakeCollection,
+      promptProgress = emptyMap(),
+      currentSectionName = "dev",
+      username = "dev_user",
+      deviceId = "DEV1234"
+
+    )
+
+    updatePromptStateAndPost(fakeState)
+
+    dataManagerData._appStatus.postValue(AppStatus(checkVersion = true))
+    dataManagerData._serverStatus.postValue(ServerState(ServerStatus.ACTIVE))
   }
 
   /**
@@ -249,67 +289,53 @@ class DataManager private constructor(val context: Context) {
    * It performs file I/O and can block for a significant amount of time.
    */
   private suspend fun reinitializeDataUnderLock() {
-    try {
-      FileInputStream(LOGIN_TOKEN_FULL_PATH).use { stream ->
-        dataManagerData.loginToken = stream.readBytes().toString(Charsets.UTF_8)
-      }
-    } catch (e: FileNotFoundException) {
-      Log.i(TAG, "loginToken not found.")
+
+    val fakePrompts = Prompts().apply {
+      array.add(
+        Prompt(
+          index = 0,
+          promptId = "dev_prompt_1",
+          promptType = PromptType.TEXT,
+          prompt = "Say Hello",
+          resourcePath = null,
+          readMinMs = 1000,
+          recordMinMs = 2000
+        )
+      )
     }
 
-    val tutorialMode = getTutorialModeFromPrefStore()
-    val promptsCollection = getPromptsCollectionFromDisk()
-    val promptProgress = getPromptProgressFromPrefStore()
-    var currentSectionName = getCurrentSectionNameFromPrefStore()
-    val username = getUsernameUnderLock()
-
-    // Special handling for first-time device ID initialization.
-    val deviceIdKey = stringPreferencesKey("deviceId")
-    var deviceId = context.prefStore.data.map { it[deviceIdKey] }.firstOrNull()
-    if (deviceId == null) {
-      // Do not use the ANDROID_ID here, we want this to change if the app is
-      // reinstalled.  More specifically, we need this to change if the session id
-      // index is reset (as happens when the prefStore is deleted on uninstall).
-      // If the same id is used with the same session id, then vital data will be
-      // overwritten in firestore.
-      deviceId = generateUnambiguousHex(4)
-      context.prefStore.edit { preferences ->
-        preferences[deviceIdKey] = deviceId
-      }
-    }
-
-    if (currentSectionName == null) {
-      val defaultSection = promptsCollection?.collectionMetadata?.defaultSection
-      if (defaultSection != null) {
-        Log.i(TAG, "defaultSection == $defaultSection")
-        if (promptsCollection.sections.containsKey(defaultSection)) {
-          // If it is valid, set it to that section.
-          currentSectionName = defaultSection
-        }
-        // If the defaultSection is not valid, leave the current section as null.
-      } else {
-        // If default is null, set to the first section.
-        currentSectionName = promptsCollection?.sections?.values?.first()?.name
-      }
-      if (currentSectionName != null) {
-        Log.i(TAG, "Setting current section from null to $currentSectionName")
-        setCurrentSectionPrefStoreUnderLock(currentSectionName)
-      }
-    }
-
-    val initialState = PromptState(
-      tutorialMode = tutorialMode,
-      promptsCollection = promptsCollection,
-      promptProgress = promptProgress,
-      currentSectionName = currentSectionName,
-      username = username,
-      deviceId = deviceId,
+    val fakeSection = PromptsSection(
+      name = "dev",
+      metadata = PromptsSectionMetadata(
+        dataCollectionId = null,
+        instructions = null
+      ),
+      mainPrompts = fakePrompts,
+      tutorialPrompts = Prompts()
     )
-    updatePromptStateAndPost(initialState)
-    val appStatus = getAppStatusFromPrefStore()
-    dataManagerData._appStatus.postValue(appStatus)
-    val userSettings = getUserSettingsFromPrefStore()
-    dataManagerData._userSettings.postValue(userSettings)
+
+    val fakeCollection = PromptsCollection(
+      collectionMetadata = PromptsCollectionMetadata(
+        defaultSection = "dev",
+        instructions = null
+      ),
+      sections = mapOf("dev" to fakeSection)
+    )
+
+    val fakeState = PromptState(
+      tutorialMode = false,
+      promptsCollection = fakeCollection,
+      promptProgress = emptyMap(),
+      currentSectionName = "dev",
+      username = "dev_user",
+      deviceId = "DEV1234"
+    )
+
+    updatePromptStateAndPost(fakeState)
+
+    dataManagerData._appStatus.postValue(AppStatus(checkVersion = true))
+    dataManagerData._serverStatus.postValue(ServerState(ServerStatus.ACTIVE))
+
     dataManagerData.initializationLatch.countDown()
   }
 
@@ -2608,7 +2634,7 @@ class DataManager private constructor(val context: Context) {
    */
   private fun updatePromptStateAndPost(newState: PromptState) {
     dataManagerData.promptStateContainer = newState
-    dataManagerData._promptState.postValue(newState)
+    dataManagerData._promptState.value = newState
   }
 
   fun postServerStatusFromCode(code: Int) {

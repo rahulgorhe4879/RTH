@@ -375,8 +375,16 @@ fun HomeScreenContent(
   onUploadClick: () -> Unit,
   onSwitchPromptsClick: () -> Unit
 ) {
+  var showStartDialog by remember { mutableStateOf(false) }
+  var allowStart by remember { mutableStateOf(false) }
   val dataManager = DataManager.getInstance(LocalContext.current.applicationContext)
   val promptState by dataManager.promptState.observeAsState()
+  LaunchedEffect(promptState?.currentPromptIndex) {
+    if (promptState?.currentPromptIndex != null) {
+      showStartDialog = true
+      allowStart = false
+    }
+  }
   val serverStatus by dataManager.serverStatus.observeAsState()
   val uploadState by dataManager.uploadState.observeAsState()
   val appStatus by dataManager.appStatus.observeAsState()
@@ -942,7 +950,7 @@ fun HomeScreenContent(
           end.linkTo(parent.end, margin = if (isTablet) 60.dp else 16.dp)
           bottom.linkTo(parent.bottom, margin = if (isTablet) 40.dp else 24.dp)
         },
-      enabled = startButtonEnabled,
+      enabled = startButtonEnabled && allowStart,
       text = startButtonText
     )
 
@@ -956,6 +964,23 @@ fun HomeScreenContent(
             bottom.linkTo(parent.bottom, margin = if (isTablet) 40.dp else 24.dp)
           },
         text = stringResource(id = R.string.switch_prompts)
+      )
+    }
+    // 🔥 Start confirmation dialog
+    if (showStartDialog) {
+      androidx.compose.material.AlertDialog(
+        onDismissRequest = {}, // force user click
+        title = { Text("Ready?") },
+        text = { Text("Please click the Start button to begin this prompt.") },
+        confirmButton = {
+          PrimaryButton(
+            onClick = {
+              showStartDialog = false
+              allowStart = true
+            },
+            text = "OK"
+          )
+        }
       )
     }
 

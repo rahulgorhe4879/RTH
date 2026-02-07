@@ -232,10 +232,21 @@ class ClipDetails(
 }
 
 fun Context.filenameToFilepath(filename: String): File {
-  return File(
-    filesDir,
-    File.separator + "upload" + File.separator + filename
-  )
+
+  val externalDirs = getExternalFilesDirs(null)
+
+  // externalDirs[0] → internal
+  // externalDirs[1] → SD card (if exists)
+
+  val baseDir = if (externalDirs.size > 1 && externalDirs[1] != null) {
+    File(externalDirs[1], "upload")   // SD card
+  } else {
+    File(filesDir, "upload")          // Internal Storage
+  }
+
+  if (!baseDir.exists()) baseDir.mkdirs()
+
+  return File(baseDir, filename)
 }
 
 /**
@@ -809,6 +820,7 @@ class RecordingActivity : FragmentActivity() {
     setContent {
       val timerText by viewModel.timerText.collectAsState()
       val recordButtonVisible by viewModel.recordButtonVisible.collectAsState()
+      var showStartPopup by remember { mutableStateOf(false) }
       val restartButtonVisible by viewModel.restartButtonVisible.collectAsState()
       val isRecording by viewModel.isRecording.collectAsState()
       val goTextVisible by viewModel.goTextVisible.collectAsState()
@@ -1004,7 +1016,7 @@ class RecordingActivity : FragmentActivity() {
               bottom.linkTo(parent.bottom, margin = 60.dp)
               end.linkTo(parent.end, margin = 120.dp)
             },
-          enabled = !isReadTimerActive,
+          enabled = !isReadTimerActive && !showStartPopup,
           isReadTimerActive = isReadTimerActive,
           readCountdownDuration = readCountdownDuration,
         )
@@ -1111,6 +1123,7 @@ class RecordingActivity : FragmentActivity() {
           currentPromptIndex = promptIndex
 
           if (promptIndex < sessionLimit) {
+            showStartPopup = true
             dataManager.logToServer("selected page for promptIndex ${promptIndex}")
             title =
               getString(R.string.prompt_count_title, currentPromptIndex + 1, prompts.array.size)
@@ -1132,6 +1145,19 @@ class RecordingActivity : FragmentActivity() {
             viewModel.setButtonState(recordVisible = false, restartVisible = false)
             skipButtonVisible = false
           }
+        }
+        if (showStartPopup) {
+          androidx.compose.material.AlertDialog(
+            onDismissRequest = { },
+            title = { Text("Ready?") },
+            text = { Text("Please click Start to begin recording this prompt.") },
+            confirmButton = {
+              PrimaryButton(
+                text = "Start",
+                onClick = { showStartPopup = false }
+              )
+            }
+          )
         }
       }
     }
